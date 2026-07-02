@@ -1,8 +1,13 @@
 use {
     mollusk_svm::{program::keyed_account_for_system_program, result::Check, Mollusk},
     solana_account::Account,
+    solana_hash::Hash,
     solana_instruction::{AccountMeta, Instruction},
+    solana_message::{
+        compiled_instruction::CompiledInstruction, LegacyMessage, Message, SanitizedMessage,
+    },
     solana_pubkey::Pubkey,
+    std::collections::HashSet,
 };
 
 fn system_account_with_lamports(lamports: u64) -> Account {
@@ -136,6 +141,73 @@ fn test_compute_units_accumulate_across_instructions() {
         "Expected CU == 150 for two transfers, got {}",
         result.compute_units_consumed
     );
+}
+
+#[test]
+fn test_process_sanitized_message_preserves_compiled_message_layout() {
+    let mollusk = Mollusk::default();
+
+    let sender = Pubkey::new_unique();
+    let recipient = Pubkey::new_unique();
+    let extra_readonly = Pubkey::new_unique();
+    let initial_balance = 10_000u64;
+    let transfer_amount = 100u64;
+
+    let transfer =
+        solana_system_interface::instruction::transfer(&sender, &recipient, transfer_amount);
+    let message_account_keys = vec![
+        sender,
+        recipient,
+        extra_readonly,
+        solana_sdk_ids::system_program::id(),
+    ];
+    let message = Message::new_with_compiled_instructions(
+        1,
+        0,
+        2,
+        message_account_keys.clone(),
+        Hash::default(),
+        vec![CompiledInstruction::new_from_raw_parts(
+            3,
+            transfer.data,
+            vec![0, 1],
+        )],
+    );
+    let sanitized_message = SanitizedMessage::Legacy(LegacyMessage::new(message, &HashSet::new()));
+
+    let result = mollusk.process_sanitized_message(
+        &sanitized_message,
+        &[
+            (sender, system_account_with_lamports(initial_balance)),
+            (recipient, system_account_with_lamports(0)),
+            (extra_readonly, system_account_with_lamports(0)),
+        ],
+    );
+
+    assert_eq!(result.raw_result, Ok(()));
+    assert_eq!(
+        result.get_account(&sender).map(|account| account.lamports),
+        Some(initial_balance - transfer_amount)
+    );
+    assert_eq!(
+        result
+            .get_account(&recipient)
+            .map(|account| account.lamports),
+        Some(transfer_amount)
+    );
+
+    #[cfg(feature = "inner-instructions")]
+    {
+        let returned_message_account_keys = result
+            .message
+            .as_ref()
+            .unwrap()
+            .account_keys()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(returned_message_account_keys, message_account_keys);
+    }
 }
 
 #[test]

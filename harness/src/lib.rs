@@ -864,6 +864,30 @@ impl Mollusk {
         }
     }
 
+    fn instructions_from_sanitized_message(
+        sanitized_message: &SanitizedMessage,
+    ) -> Vec<Instruction> {
+        sanitized_message
+            .decompile_instructions()
+            .into_iter()
+            .map(|instruction| Instruction {
+                program_id: *instruction.program_id,
+                accounts: instruction
+                    .accounts
+                    .into_iter()
+                    .map(|meta| {
+                        if meta.is_writable {
+                            AccountMeta::new(*meta.pubkey, meta.is_signer)
+                        } else {
+                            AccountMeta::new_readonly(*meta.pubkey, meta.is_signer)
+                        }
+                    })
+                    .collect(),
+                data: instruction.data.to_vec(),
+            })
+            .collect()
+    }
+
     // Determine the accounts to fallback to during account compilation.
     fn get_account_fallbacks<'a>(
         &self,
@@ -1363,6 +1387,67 @@ impl Mollusk {
 
         let message_result = self.process_transaction_message(
             &sanitized_message,
+            &mut transaction_context,
+            &sysvar_cache,
+        );
+
+        let resulting_accounts = if message_result.raw_result.is_ok() {
+            Self::deconstruct_resulting_accounts(&transaction_context, accounts)
+        } else {
+            accounts.to_vec()
+        };
+
+        let program_result = MessageResult::extract_txn_program_result(&message_result.raw_result);
+
+        TransactionResult {
+            compute_units_consumed: message_result.compute_units_consumed,
+            execution_time: message_result.execution_time,
+            program_result,
+            raw_result: message_result.raw_result,
+            return_data: message_result.return_data,
+            resulting_accounts,
+            #[cfg(feature = "inner-instructions")]
+            inner_instructions: message_result.inner_instructions,
+            #[cfg(feature = "inner-instructions")]
+            message: message_result.message,
+        }
+    }
+
+    /// Process an existing sanitized Solana message using a single shared
+    /// transaction context.
+    ///
+    /// Unlike `Self::process_transaction_instructions`, this API does not
+    /// compile a new message from high-level `Instruction`s. It preserves the
+    /// caller-provided account key order, compiled instruction account indexes,
+    /// and loaded address table keys from `sanitized_message`, which makes it
+    /// the preferred entrypoint for replaying on-chain transactions and compact
+    /// fixtures.
+    pub fn process_sanitized_message(
+        &self,
+        sanitized_message: &SanitizedMessage,
+        accounts: &[(Pubkey, Account)],
+    ) -> TransactionResult {
+        let instructions = Self::instructions_from_sanitized_message(sanitized_message);
+        let fallback_accounts = self.get_account_fallbacks(
+            instructions.iter().map(|ix| &ix.program_id),
+            instructions.iter(),
+            accounts,
+        );
+        let transaction_accounts =
+            crate::compile_accounts::transaction_accounts_for_sanitized_message(
+                sanitized_message,
+                accounts.iter(),
+                &fallback_accounts,
+            );
+
+        let mut transaction_context = self.create_transaction_context(
+            transaction_accounts,
+            sanitized_message.instructions().len(),
+        );
+        let sysvar_cache = self.sysvars.setup_sysvar_cache(accounts);
+
+        let message_result = self.process_transaction_message(
+            sanitized_message,
             &mut transaction_context,
             &sysvar_cache,
         );
