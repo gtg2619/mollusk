@@ -8,7 +8,10 @@ use {
     solana_loader_v4_interface::state::{LoaderV4State, LoaderV4Status},
     solana_program_runtime::{
         invoke_context::{BuiltinFunctionWithContext, InvokeContext},
-        loaded_programs::{LoadProgramMetrics, ProgramCacheEntry, ProgramCacheForTxBatch},
+        loaded_programs::{
+            LoadProgramMetrics, ProgramCacheEntry, ProgramCacheForTxBatch,
+            DELAY_VISIBILITY_SLOT_OFFSET,
+        },
         solana_sbpf::program::BuiltinProgram,
     },
     solana_pubkey::Pubkey,
@@ -132,6 +135,35 @@ impl ProgramCache {
 
     /// Add a program to the cache.
     pub fn add_program(&mut self, program_id: &Pubkey, loader_key: &Pubkey, elf: &[u8]) {
+        self.add_program_with_slots(program_id, loader_key, elf, 0, 0);
+    }
+
+    /// Add a program to the cache with the deployment slot that should be used
+    /// for loader visibility and SBPF version selection.
+    pub fn add_program_with_deployment_slot(
+        &mut self,
+        program_id: &Pubkey,
+        loader_key: &Pubkey,
+        elf: &[u8],
+        deployment_slot: u64,
+    ) {
+        self.add_program_with_slots(
+            program_id,
+            loader_key,
+            elf,
+            deployment_slot,
+            deployment_slot.saturating_add(DELAY_VISIBILITY_SLOT_OFFSET),
+        );
+    }
+
+    fn add_program_with_slots(
+        &mut self,
+        program_id: &Pubkey,
+        loader_key: &Pubkey,
+        elf: &[u8],
+        deployment_slot: u64,
+        effective_slot: u64,
+    ) {
         // This might look rough, but it's actually functionally the same as
         // calling `create_program_runtime_environment_v1` on every addition.
         let environment = {
@@ -155,8 +187,8 @@ impl ProgramCache {
                 ProgramCacheEntry::new(
                     loader_key,
                     environment,
-                    0,
-                    0,
+                    deployment_slot,
+                    effective_slot,
                     elf,
                     elf.len(),
                     &mut LoadProgramMetrics::default(),
@@ -165,6 +197,10 @@ impl ProgramCache {
             ),
             Some(elf),
         );
+    }
+
+    pub(crate) fn set_slot(&mut self, slot: u64) {
+        self.cache.borrow_mut().set_slot_for_tests(slot);
     }
 
     /// Load a program from the cache.

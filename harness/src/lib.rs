@@ -848,9 +848,32 @@ impl Mollusk {
         self.program_cache.add_program(program_id, loader_key, elf);
     }
 
+    /// Add a program to the test environment using the deployment slot from
+    /// the loader account.
+    ///
+    /// This is useful for replaying already-deployed upgradeable programs,
+    /// where Agave derives SBPF visibility and version semantics from the
+    /// programdata deployment slot rather than treating the program as a
+    /// genesis deployment.
+    pub fn add_program_with_loader_and_elf_and_deployment_slot(
+        &mut self,
+        program_id: &Pubkey,
+        loader_key: &Pubkey,
+        elf: &[u8],
+        deployment_slot: u64,
+    ) {
+        self.program_cache.add_program_with_deployment_slot(
+            program_id,
+            loader_key,
+            elf,
+            deployment_slot,
+        );
+    }
+
     /// Warp the test environment to a slot by updating sysvars.
     pub fn warp_to_slot(&mut self, slot: u64) {
-        self.sysvars.warp_to_slot(slot)
+        self.sysvars.warp_to_slot(slot);
+        self.program_cache.set_slot(slot);
     }
 
     fn get_loader_key(&self, program_id: &Pubkey) -> Pubkey {
